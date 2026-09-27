@@ -6,6 +6,7 @@ from google import genai
 from google.genai import types
 
 MODEL = "gemini-3.5-flash-lite"
+TTS_MODEL = "gemini-3.1-flash-tts-preview"
 
 PROMPT = """You help immigrants in Sweden understand letters from Swedish authorities
 (Försäkringskassan, Arbetsförmedlingen, Migrationsverket, Skatteverket, CSN, kommunen).
@@ -43,7 +44,31 @@ def explain_letter(file_bytes, mime_type, text, language):
     )
     return reply.text
 
+def text_to_speech(text):
+    """Turn text into speech and return it as WAV audio."""
+    clean = re.sub(r"[#*_`>-]", "", text)
+    client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+    reply = client.models.generate_content(
+        model=TTS_MODEL,
+        contents=f"Read this slowly and clearly:\n{clean}",
+        config=types.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Kore")
+                )
+            ),
+        ),
+    )
+    pcm = reply.candidates[0].content.parts[0].inline_data.data
 
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(24000)
+        wav.writeframes(pcm)
+    return buffer.getvalue()
 # ---------- Page ----------
 st.set_page_config(page_title="BrevKoll", page_icon="✉️")
 st.title("✉️ BrevKoll")
@@ -65,12 +90,25 @@ if st.button("Explain my letter", type="primary"):
             try:
                 file_bytes = uploaded.getvalue() if uploaded else None
                 mime_type = uploaded.type if uploaded else None
-                answer = explain_letter(file_bytes, mime_type, text, language)
-                st.markdown(answer)
+                st.session_state.answer = explain_letter(file_bytes, mime_type, text, language)
+                st.session_state.audio = None
+                #st.markdown(answer)
             except Exception as e:
                 if "429" in str(e):
                     st.warning("Too many requests right now. Wait a minute and try again.")
                 else:
                     st.error(f"Something went wrong: {e}")
+if st.session_state.get("answer"):
+    st.divider()
+    st.markdown(st.session_state.answer)
 
+    if st.button("🔊 Listen"):
+        with st.spinner("Creating audio..."):
+            try:
+                st.session_state.audio = text_to_speech(st.session_state.answer)
+            except Exception as e:
+                st.error(f"Something went wrong: {e}")
+
+    if st.session_state.get("audio"):
+        st.audio(st.session_state.audio, format="audio/wav")
 st.caption("Automatic explanation – not legal advice. Don't upload letters with real personal data while testing.")
